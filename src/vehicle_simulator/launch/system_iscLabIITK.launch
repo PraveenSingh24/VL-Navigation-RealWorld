@@ -1,0 +1,86 @@
+<launch>
+  <arg name="vehicleHeight" default="0.8"/>
+  <arg name="cameraOffsetZ" default="0"/>
+  <arg name="vehicleX" default="0"/>
+  <arg name="vehicleY" default="0"/>
+  <arg name="terrainZ" default="0"/>
+  <arg name="vehicleYaw" default="0"/>
+  <arg name="checkTerrainConn" default="true"/>
+
+  <include file="$(find local_planner)/launch/local_planner.launch" >
+    <arg name="cameraOffsetZ" value="$(arg cameraOffsetZ)"/>
+    <arg name="goalX" value="$(arg vehicleX)"/>
+    <arg name="goalY" value="$(arg vehicleY)"/>
+  </include>
+
+  <include file="$(find terrain_analysis)/launch/terrain_analysis.launch" />
+  
+  <include file="$(find terrain_analysis_ext)/launch/terrain_analysis_ext.launch" >
+    <arg name="checkTerrainConn" value="$(arg checkTerrainConn)"/>
+  </include>
+
+  <node pkg="dynamic_reconfigure" type="dynparam" name="set_auto_exposure_roi"
+    args="load /camera/rgb_camera/auto_exposure_roi /home/administrator/aed_environment/src/vehicle_simulator/cameraRoi.yaml" />
+
+  <arg name="align_depth" default="true"/>
+  <arg name="depth_width" default="640"/>
+  <arg name="depth_height" default="480"/>
+  <arg name="depth_fps" default="15"/>
+  <arg name="color_width" default="640"/>
+  <arg name="color_height" default="480"/>
+  <arg name="color_fps" default="15"/>
+  <arg name="depth_topic" default="/camera/depth/image_rect_raw"/>
+
+  <include file="$(find realsense2_camera)/launch/rs_rgbd.launch" >
+    <arg name="align_depth" value="$(arg align_depth)"/>
+    <arg name="depth_width" value="$(arg depth_width)"/>
+    <arg name="depth_height" value="$(arg depth_height)"/>
+    <arg name="depth_fps" value="$(arg depth_fps)"/>
+    <arg name="color_width" value="$(arg color_width)"/>
+    <arg name="color_height" value="$(arg color_height)"/>
+    <arg name="color_fps" value="$(arg color_fps)"/>
+    <!--arg name="depth_topic" value="$(arg depth_topic)"/-->
+  </include>
+  
+  <!--node pkg="depth_to_pointcloud" type="depth_to_pointcloud.py" name="RealSenseCamera" output="screen"/-->
+  <node pkg="topic_tools" type="relay" name="huskyWheelEncoder"
+    args="/odometry/filtered /state_estimation"/>
+  <node pkg="tf" type="static_transform_publisher" name="map_to_odom" 
+      args="0 0 0 0 0 0 map odom 100" />
+  <node pkg="tf" type="static_transform_publisher" name="sensor_frame_def" 
+      args="0 0 0 0 0 0 base_link sensor 100" />
+  <include file="$(find husky_base)/launch/base.launch" />
+  <node pkg="tf" type="static_transform_publisher" name="camera_connector" 
+      args="0 0 0 0 0 0 top_link camera_link 100" />
+
+  <node pkg="vehicle_simulator" type="vehicleSimulator" name="vehicleStateProcessor" output="screen">
+    
+    <param name="use_gazebo_time" value="false" />
+    
+    <param name="sensorOffsetX" value="0" />
+    <param name="sensorOffsetY" value="0" />
+    <param name="vehicleHeight" value="0.8" />
+    <param name="cameraOffsetZ" value="0" />
+    <param name="vehicleX" value="0" />
+    <param name="vehicleY" value="0" />
+    <param name="vehicleZ" value="0" />
+    <param name="vehicleYaw" value="0" />
+    
+    <param name="terrainVoxelSize" value="0.05" />
+    <param name="groundHeightThre" value="0.1" />
+    <param name="adjustZ" value="true" />
+    <param name="terrainRadiusZ" value="1.0" />
+    <param name="minTerrainPointNumZ" value="5" />
+    <param name="smoothRateZ" value="0.5" />
+    <param name="adjustIncl" value="true" />
+    <param name="terrainRadiusIncl" value="2.0" />
+    <param name="minTerrainPointNumIncl" value="200" />
+    <param name="smoothRateIncl" value="0.5" />
+    <param name="InclFittingThre" value="0.2" />
+    <param name="maxIncl" value="30.0" />
+  </node>
+  <node launch-prefix="nice" pkg="rviz" type="rviz" name="rvizGA" args="-d $(find vehicle_simulator)/rviz/vehicle_simulator.rviz" respawn="true"/>
+  <!--include file="$(find visualization_tools)/launch/visualization_tools.launch" >
+    <arg name="world_name" value="$(arg world_name)"/>
+  </include-->
+</launch>

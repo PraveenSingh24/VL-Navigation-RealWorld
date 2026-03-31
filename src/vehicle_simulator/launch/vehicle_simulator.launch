@@ -2,7 +2,7 @@
 
   <arg name="sensorOffsetX" default="0"/>
   <arg name="sensorOffsetY" default="0"/>
-  <arg name="vehicleHeight" default="0.75"/>
+  <arg name="vehicleHeight" default="0.8"/>
   <arg name="cameraOffsetZ" default="0"/>
 
   <arg name="vehicleX" default="0"/>
@@ -30,27 +30,7 @@
   <arg name="headless" default="false"/>
   <arg name="debug" default="false"/>
   <arg name="verbose" default="false"/>
-  <arg name="world_name" default="garage"/>
-
-  <include file="$(find gazebo_ros)/launch/empty_world.launch" >
-    <arg name="paused" value="$(arg paused)"/>
-    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
-    <arg name="gui" value="$(arg gui)"/>
-    <arg name="headless" value="$(arg headless)"/>
-    <arg name="debug" value="$(arg debug)"/>
-    <arg name="verbose" value="$(arg verbose)"/>
-    <arg name="world_name" value="$(find vehicle_simulator)/world/$(arg world_name).world"/>
-  </include>
-
-  <param name="camera_description" command="$(find xacro)/xacro --inorder '$(find vehicle_simulator)/urdf/camera.urdf.xacro'" />
-  <node pkg="gazebo_ros" type="spawn_model" name="spawn_camera" args="-urdf -param /camera_description -model camera"/>
-
-  <param name="lidar_description" command="$(find xacro)/xacro --inorder '$(find vehicle_simulator)/urdf/lidar.urdf.xacro'" />
-  <node pkg="gazebo_ros" type="spawn_model" name="spawn_lidar" args="-urdf -param /lidar_description -model lidar"/>
-
-  <param name="robot_description" command="$(find xacro)/xacro --inorder '$(find vehicle_simulator)/urdf/robot.urdf.xacro'" />
-  <node pkg="gazebo_ros" type="spawn_model" name="spawn_robot" args="-urdf -param /robot_description -model robot"/>
-
+  
   <node pkg="vehicle_simulator" type="vehicleSimulator" name="vehicleSimulator" output="screen" required="true">
     <param name="use_gazebo_time" type="bool" value="false" />
     <param name="sensorOffsetX" value="$(arg sensorOffsetX)" />

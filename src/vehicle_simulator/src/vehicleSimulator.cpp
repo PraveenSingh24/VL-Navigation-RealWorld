@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ros/ros.h>
-
+#include <Eigen/Dense> 
 #include <message_filters/subscriber.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
@@ -20,6 +20,7 @@
 
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
+#include <tf/transform_listener.h> // Added for odometry processing
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/highgui/highgui.hpp>
@@ -29,10 +30,16 @@
 #include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/kdtree/kdtree_flann.h>
+#include <geometry_msgs/PointStamped.h> 
+#include <geometry_msgs/Twist.h> // For /cmd_vel
 
 using namespace std;
 
 const double PI = 3.1415926;
+
+// ======================================================================
+// GLOBAL STATE AND CONFIGURATION (Types fixed from float to double for tf)
+// ======================================================================
 
 bool use_gazebo_time = false;
 double cameraOffsetZ = 0;
@@ -56,45 +63,101 @@ const int systemDelay = 5;
 int systemInitCount = 0;
 bool systemInited = false;
 
+// Robot Pose Variables (Changed to double to fix getRPY error)
+double vehicleX = 0;
+double vehicleY = 0;
+double vehicleZ = 0;
+double vehicleRoll = 0;
+double vehiclePitch = 0;
+double vehicleYaw = 0;
+
+// Velocity/Control Variables
+double vehicleYawRate = 0;
+double vehicleSpeed = 0;
+
+double terrainZ = 0;
+double terrainRoll = 0;
+double terrainPitch = 0;
+
+// Odometry History Stack (FIX: All arrays are now declared globally as double)
+const int stackNum = 400;
+double vehicleXStack[stackNum];
+double vehicleYStack[stackNum];
+double vehicleZStack[stackNum];
+double vehicleRollStack[stackNum];
+double vehiclePitchStack[stackNum];
+double vehicleYawStack[stackNum];
+double terrainRollStack[stackNum];
+double terrainPitchStack[stackNum];
+double odomTimeStack[stackNum];
+int odomSendIDPointer = -1;
+int odomRecIDPointer = 0;
+double goalX = 0;
+double goalY = 0; 
+
 pcl::PointCloud<pcl::PointXYZI>::Ptr scanData(new pcl::PointCloud<pcl::PointXYZI>());
 pcl::PointCloud<pcl::PointXYZI>::Ptr terrainCloud(new pcl::PointCloud<pcl::PointXYZI>());
 pcl::PointCloud<pcl::PointXYZI>::Ptr terrainCloudIncl(new pcl::PointCloud<pcl::PointXYZI>());
 pcl::PointCloud<pcl::PointXYZI>::Ptr terrainCloudDwz(new pcl::PointCloud<pcl::PointXYZI>());
 
-std::vector<int> scanInd;
-
-ros::Time odomTime;
-
-float vehicleX = 0;
-float vehicleY = 0;
-float vehicleZ = 0;
-float vehicleRoll = 0;
-float vehiclePitch = 0;
-float vehicleYaw = 0;
-
-float vehicleYawRate = 0;
-float vehicleSpeed = 0;
-
-float terrainZ = 0;
-float terrainRoll = 0;
-float terrainPitch = 0;
-
-const int stackNum = 400;
-float vehicleXStack[stackNum];
-float vehicleYStack[stackNum];
-float vehicleZStack[stackNum];
-float vehicleRollStack[stackNum];
-float vehiclePitchStack[stackNum];
-float vehicleYawStack[stackNum];
-float terrainRollStack[stackNum];
-float terrainPitchStack[stackNum];
-double odomTimeStack[stackNum];
-int odomSendIDPointer = -1;
-int odomRecIDPointer = 0;
-
 pcl::VoxelGrid<pcl::PointXYZI> terrainDwzFilter;
-
 ros::Publisher* pubScanPointer = NULL;
+ros::Publisher* pubMotionPointer = NULL;
+tf::TransformBroadcaster *tfBroadcasterPointer = NULL;
+
+
+// ======================================================================
+// HANDLER FUNCTIONS
+// ======================================================================
+
+// NEW HANDLER: Integrates External Odometry (e.g., from EKF via remapping)
+void odometryHandler(const nav_msgs::Odometry::ConstPtr& odomIn)
+{
+  // 1. Update Global State Variables (replaces simulation integration)
+  vehicleX = odomIn->pose.pose.position.x;
+  vehicleY = odomIn->pose.pose.position.y;
+  vehicleZ = odomIn->pose.pose.position.z;
+
+  // Convert Quaternion to RPY (Fixed type issue: vehicleRoll/Pitch/Yaw are now double)
+  tf::Quaternion q;
+  tf::quaternionMsgToTF(odomIn->pose.pose.orientation, q);
+  tf::Matrix3x3(q).getRPY(vehicleRoll, vehiclePitch, vehicleYaw);
+
+  // 2. Update Velocity/Rate Variables (used for command relay)
+  vehicleSpeed = odomIn->twist.twist.linear.x;
+  vehicleYawRate = odomIn->twist.twist.angular.z;
+
+  // 3. Update Odometry History Stack (Used for Point Cloud Time Lookup)
+  ros::Time odomTime = odomIn->header.stamp;
+  odomSendIDPointer = (odomSendIDPointer + 1) % stackNum;
+  odomTimeStack[odomSendIDPointer] = odomTime.toSec();
+  
+  // Stacking the current pose
+  vehicleXStack[odomSendIDPointer] = vehicleX;
+  vehicleYStack[odomSendIDPointer] = vehicleY;
+  vehicleZStack[odomSendIDPointer] = vehicleZ;
+  vehicleRollStack[odomSendIDPointer] = vehicleRoll;
+  vehiclePitchStack[odomSendIDPointer] = vehiclePitch;
+  vehicleYawStack[odomSendIDPointer] = vehicleYaw;
+  
+  // Stacking the terrain tilt (which comes from terrainCloudHandler, not odometry)
+  terrainRollStack[odomSendIDPointer] = terrainRoll;
+  terrainPitchStack[odomSendIDPointer] = terrainPitch;
+  
+  // 4. Publish TF for the new pose
+  /*
+  tf::StampedTransform odomTrans;
+  odomTrans.stamp_ = odomTime;
+  odomTrans.frame_id_ = "map";
+  odomTrans.child_frame_id_ = "sensor";
+
+  odomTrans.setRotation(tf::Quaternion(odomIn->pose.pose.orientation.x, odomIn->pose.pose.orientation.y,
+                                       odomIn->pose.pose.orientation.z, odomIn->pose.pose.orientation.w));
+  odomTrans.setOrigin(tf::Vector3(vehicleX, vehicleY, vehicleZ));
+  tfBroadcasterPointer->sendTransform(odomTrans);
+  */
+}
+
 
 void scanHandler(const sensor_msgs::PointCloud2::ConstPtr& scanIn)
 {
@@ -112,65 +175,57 @@ void scanHandler(const sensor_msgs::PointCloud2::ConstPtr& scanIn)
   {
     return;
   }
+  
+  // Time-synchronized odometry lookup
+  // This loop finds the pose closest in time to the scan time
   while (odomTimeStack[(odomRecIDPointer + 1) % stackNum] < scanTime &&
          odomRecIDPointer != (odomSendIDPointer + 1) % stackNum)
   {
     odomRecIDPointer = (odomRecIDPointer + 1) % stackNum;
   }
 
-  double odomRecTime = odomTime.toSec();
-  float vehicleRecX = vehicleX;
-  float vehicleRecY = vehicleY;
-  float vehicleRecZ = vehicleZ;
-  float vehicleRecRoll = vehicleRoll;
-  float vehicleRecPitch = vehiclePitch;
-  float vehicleRecYaw = vehicleYaw;
-  float terrainRecRoll = terrainRoll;
-  float terrainRecPitch = terrainPitch;
+  // FIX: odomRecTime is now retrieved from the stack, making it locally defined
+  double odomRecTime = odomTimeStack[odomRecIDPointer]; 
+  
+  // Retrieve the vehicle state at the time of the scan
+  double vehicleRecX = vehicleXStack[odomRecIDPointer];
+  double vehicleRecY = vehicleYStack[odomRecIDPointer];
+  double vehicleRecZ = vehicleZStack[odomRecIDPointer];
+  double vehicleRecRoll = vehicleRollStack[odomRecIDPointer];
+  double vehicleRecPitch = vehiclePitchStack[odomRecIDPointer];
+  double vehicleRecYaw = vehicleYawStack[odomRecIDPointer];
 
-  if (use_gazebo_time)
-  {
-    odomRecTime = odomTimeStack[odomRecIDPointer];
-    vehicleRecX = vehicleXStack[odomRecIDPointer];
-    vehicleRecY = vehicleYStack[odomRecIDPointer];
-    vehicleRecZ = vehicleZStack[odomRecIDPointer];
-    vehicleRecRoll = vehicleRollStack[odomRecIDPointer];
-    vehicleRecPitch = vehiclePitchStack[odomRecIDPointer];
-    vehicleRecYaw = vehicleYawStack[odomRecIDPointer];
-    terrainRecRoll = terrainRollStack[odomRecIDPointer];
-    terrainRecPitch = terrainPitchStack[odomRecIDPointer];
-  }
-
-  float sinTerrainRecRoll = sin(terrainRecRoll);
-  float cosTerrainRecRoll = cos(terrainRecRoll);
-  float sinTerrainRecPitch = sin(terrainRecPitch);
-  float cosTerrainRecPitch = cos(terrainRecPitch);
+  // Point Cloud Registration (Transformation)
+  
+  // Compute rotation matrix using the time-synced pose
+  Eigen::Matrix3f rotationMatrix;
+  rotationMatrix = Eigen::AngleAxisf(vehicleRecYaw, Eigen::Vector3f::UnitZ()) *
+                  Eigen::AngleAxisf(vehicleRecPitch, Eigen::Vector3f::UnitY()) *
+                  Eigen::AngleAxisf(vehicleRecRoll, Eigen::Vector3f::UnitX());
 
   scanData->clear();
+  std::vector<int> scanInd;
   pcl::fromROSMsg(*scanIn, *scanData);
   pcl::removeNaNFromPointCloud(*scanData, *scanData, scanInd);
 
   int scanDataSize = scanData->points.size();
   for (int i = 0; i < scanDataSize; i++)
   {
-    float pointX1 = scanData->points[i].x;
-    float pointY1 = scanData->points[i].y * cosTerrainRecRoll - scanData->points[i].z * sinTerrainRecRoll;
-    float pointZ1 = scanData->points[i].y * sinTerrainRecRoll + scanData->points[i].z * cosTerrainRecRoll;
+    Eigen::Vector3f point(scanData->points[i].x, scanData->points[i].y, scanData->points[i].z);
 
-    float pointX2 = pointX1 * cosTerrainRecPitch + pointZ1 * sinTerrainRecPitch;
-    float pointY2 = pointY1;
-    float pointZ2 = -pointX1 * sinTerrainRecPitch + pointZ1 * cosTerrainRecPitch;
+    // Apply rotation and translation
+    point = rotationMatrix * point;
 
-    float pointX3 = pointX2 + vehicleRecX;
-    float pointY3 = pointY2 + vehicleRecY;
-    float pointZ3 = pointZ2 + vehicleRecZ;
+    point.x() += vehicleRecX;
+    point.y() += vehicleRecY;
+    point.z() += vehicleRecZ;
 
-    scanData->points[i].x = pointX3;
-    scanData->points[i].y = pointY3;
-    scanData->points[i].z = pointZ3;
+    scanData->points[i].x = point.x();
+    scanData->points[i].y = point.y();
+    scanData->points[i].z = point.z();
   }
 
-  // publish 5Hz registered scan messages
+  // Publish registered scan messages
   sensor_msgs::PointCloud2 scanData2;
   pcl::toROSMsg(*scanData, scanData2);
   scanData2.header.stamp = ros::Time().fromSec(odomRecTime);
@@ -180,6 +235,9 @@ void scanHandler(const sensor_msgs::PointCloud2::ConstPtr& scanIn)
 
 void terrainCloudHandler(const sensor_msgs::PointCloud2ConstPtr& terrainCloud2)
 {
+  // This function remains the same as its logic only reads global state variables (vehicleX/Y)
+  // for local terrain lookup and updates terrainRoll/Pitch/Z.
+
   if (!adjustZ && !adjustIncl)
   {
     return;
@@ -198,6 +256,7 @@ void terrainCloudHandler(const sensor_msgs::PointCloud2ConstPtr& terrainCloud2)
   {
     point = terrainCloud->points[i];
 
+    // Note: uses global vehicleX and vehicleY (latest filtered state)
     float dis = sqrt((point.x - vehicleX) * (point.x - vehicleX) + (point.y - vehicleY) * (point.y - vehicleY));
 
     if (dis < terrainRadiusZ)
@@ -226,9 +285,11 @@ void terrainCloudHandler(const sensor_msgs::PointCloud2ConstPtr& terrainCloud2)
 
   if (terrainValid && adjustZ)
   {
+    // Updates global terrainZ
     terrainZ = (1.0 - smoothRateZ) * terrainZ + smoothRateZ * elevMean;
   }
 
+  // Voxel filter for terrain
   terrainCloudDwz->clear();
   terrainDwzFilter.setInputCloud(terrainCloudIncl);
   terrainDwzFilter.filter(*terrainCloudDwz);
@@ -239,6 +300,7 @@ void terrainCloudHandler(const sensor_msgs::PointCloud2ConstPtr& terrainCloud2)
     return;
   }
 
+  // Least Squares Fitting for Inclination (Roll/Pitch)
   cv::Mat matA(terrainCloudDwzSize, 2, CV_32F, cv::Scalar::all(0));
   cv::Mat matAt(2, terrainCloudDwzSize, CV_32F, cv::Scalar::all(0));
   cv::Mat matAtA(2, 2, CV_32F, cv::Scalar::all(0));
@@ -289,6 +351,7 @@ void terrainCloudHandler(const sensor_msgs::PointCloud2ConstPtr& terrainCloud2)
 
   if (terrainValid && adjustIncl)
   {
+    // Updates global terrainPitch/Roll
     terrainPitch = (1.0 - smoothRateIncl) * terrainPitch + smoothRateIncl * matX.at<float>(0, 0);
     terrainRoll = (1.0 - smoothRateIncl) * terrainRoll + smoothRateIncl * matX.at<float>(1, 0);
   }
@@ -296,16 +359,27 @@ void terrainCloudHandler(const sensor_msgs::PointCloud2ConstPtr& terrainCloud2)
 
 void speedHandler(const geometry_msgs::TwistStamped::ConstPtr& speedIn)
 {
-  vehicleSpeed = speedIn->twist.linear.x;
-  vehicleYawRate = speedIn->twist.angular.z;
+  // This is kept to allow control commands to modulate the velocity variables
+  vehicleSpeed = 0.1 * speedIn->twist.linear.x;
+  vehicleYawRate = 0.1 * speedIn->twist.angular.z;
 }
 
+void goalHandlerR(const geometry_msgs::PointStamped::ConstPtr& goal) 
+{
+  goalX = goal->point.x;
+  goalY = goal->point.y;
+}
+
+// ======================================================================
+// MAIN FUNCTION
+// ======================================================================
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "vehicleSimulator");
+  ros::init(argc, argv, "vehicleStateProcessor");
   ros::NodeHandle nh;
   ros::NodeHandle nhPrivate = ros::NodeHandle("~");
 
+  // Get Parameters (UNCHANGED)
   nhPrivate.getParam("use_gazebo_time", use_gazebo_time);
   nhPrivate.getParam("cameraOffsetZ", cameraOffsetZ);
   nhPrivate.getParam("sensorOffsetX", sensorOffsetX);
@@ -321,124 +395,57 @@ int main(int argc, char** argv)
   nhPrivate.getParam("adjustZ", adjustZ);
   nhPrivate.getParam("terrainRadiusZ", terrainRadiusZ);
   nhPrivate.getParam("minTerrainPointNumZ", minTerrainPointNumZ);
+  nhPrivate.getParam("smoothRateZ", smoothRateZ);
   nhPrivate.getParam("adjustIncl", adjustIncl);
   nhPrivate.getParam("terrainRadiusIncl", terrainRadiusIncl);
   nhPrivate.getParam("minTerrainPointNumIncl", minTerrainPointNumIncl);
+  nhPrivate.getParam("smoothRateIncl", smoothRateIncl);
   nhPrivate.getParam("InclFittingThre", InclFittingThre);
   nhPrivate.getParam("maxIncl", maxIncl);
-
+  
+  // --- SUBSCRIBERS ---
+  // NEW: Subscribes to the external filtered odometry (remapped from /odometry/filtered)
+  ros::Subscriber subOdometry = nh.subscribe<nav_msgs::Odometry>("/state_estimation", 5, odometryHandler); 
+  
   ros::Subscriber subScan = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_points", 2, scanHandler);
-
   ros::Subscriber subTerrainCloud = nh.subscribe<sensor_msgs::PointCloud2>("/terrain_map", 2, terrainCloudHandler);
+  ros::Subscriber subSpeed = nh.subscribe<geometry_msgs::TwistStamped>("/cmd_vel_in", 5, speedHandler);
+  ros::Subscriber subGoal = nh.subscribe<geometry_msgs::PointStamped> ("/way_point", 5, goalHandlerR);
 
-  ros::Subscriber subSpeed = nh.subscribe<geometry_msgs::TwistStamped>("/cmd_vel", 5, speedHandler);
-
-  ros::Publisher pubVehicleOdom = nh.advertise<nav_msgs::Odometry>("/state_estimation", 5);
-
-  nav_msgs::Odometry odomData;
-  odomData.header.frame_id = "map";
-  odomData.child_frame_id = "sensor";
-
-  tf::TransformBroadcaster tfBroadcaster;
-  tf::StampedTransform odomTrans;
-  odomTrans.frame_id_ = "map";
-  odomTrans.child_frame_id_ = "sensor";
-
-  ros::Publisher pubModelState = nh.advertise<gazebo_msgs::ModelState>("/gazebo/set_model_state", 5);
-  gazebo_msgs::ModelState cameraState;
-  cameraState.model_name = "camera";
-  gazebo_msgs::ModelState lidarState;
-  lidarState.model_name = "lidar";
-  gazebo_msgs::ModelState robotState;
-  robotState.model_name = "robot";
-
+  // --- PUBLISHERS ---
   ros::Publisher pubScan = nh.advertise<sensor_msgs::PointCloud2>("/registered_scan", 2);
   pubScanPointer = &pubScan;
+  
+  ros::Publisher huskymotion = nh.advertise<geometry_msgs::Twist>("/cmd_vel",5);
+  pubMotionPointer = &huskymotion;
+
+  // --- TF BROADCASTER (Used in odometryHandler now) ---
+  tf::TransformBroadcaster tfBroadcaster;
+  tfBroadcasterPointer = &tfBroadcaster;
 
   terrainDwzFilter.setLeafSize(terrainVoxelSize, terrainVoxelSize, terrainVoxelSize);
 
-  printf("\nSimulation started.\n\n");
+  printf("\nVehicle State Processor started. Using external Odometry for pose.\n\n");
 
-  ros::Rate rate(200);
+  geometry_msgs::Twist twist_msg;
+  ros::Rate rate(200); 
   bool status = ros::ok();
+  
   while (status)
   {
     ros::spinOnce();
 
-    float vehicleRecRoll = vehicleRoll;
-    float vehicleRecPitch = vehiclePitch;
-    float vehicleRecZ = vehicleZ;
-
-    vehicleRoll = terrainRoll * cos(vehicleYaw) + terrainPitch * sin(vehicleYaw);
-    vehiclePitch = -terrainRoll * sin(vehicleYaw) + terrainPitch * cos(vehicleYaw);
-    vehicleYaw += 0.005 * vehicleYawRate;
-    if (vehicleYaw > PI)
-      vehicleYaw -= 2 * PI;
-    else if (vehicleYaw < -PI)
-      vehicleYaw += 2 * PI;
-
-    vehicleX += 0.005 * cos(vehicleYaw) * vehicleSpeed +
-                0.005 * vehicleYawRate * (-sin(vehicleYaw) * sensorOffsetX - cos(vehicleYaw) * sensorOffsetY);
-    vehicleY += 0.005 * sin(vehicleYaw) * vehicleSpeed +
-                0.005 * vehicleYawRate * (cos(vehicleYaw) * sensorOffsetX - sin(vehicleYaw) * sensorOffsetY);
-    vehicleZ = terrainZ + vehicleHeight;
-
-    ros::Time odomTimeRec = odomTime;
-    odomTime = ros::Time::now();
-    if (odomTime == odomTimeRec) odomTime += ros::Duration(0.005);
-
-    odomSendIDPointer = (odomSendIDPointer + 1) % stackNum;
-    odomTimeStack[odomSendIDPointer] = odomTime.toSec();
-    vehicleXStack[odomSendIDPointer] = vehicleX;
-    vehicleYStack[odomSendIDPointer] = vehicleY;
-    vehicleZStack[odomSendIDPointer] = vehicleZ;
-    vehicleRollStack[odomSendIDPointer] = vehicleRoll;
-    vehiclePitchStack[odomSendIDPointer] = vehiclePitch;
-    vehicleYawStack[odomSendIDPointer] = vehicleYaw;
-    terrainRollStack[odomSendIDPointer] = terrainRoll;
-    terrainPitchStack[odomSendIDPointer] = terrainPitch;
-
-    // publish 200Hz odometry messages
-    geometry_msgs::Quaternion geoQuat = tf::createQuaternionMsgFromRollPitchYaw(vehicleRoll, vehiclePitch, vehicleYaw);
-
-    odomData.header.stamp = odomTime;
-    odomData.pose.pose.orientation = geoQuat;
-    odomData.pose.pose.position.x = vehicleX;
-    odomData.pose.pose.position.y = vehicleY;
-    odomData.pose.pose.position.z = vehicleZ;
-    odomData.twist.twist.angular.x = 200.0 * (vehicleRoll - vehicleRecRoll);
-    odomData.twist.twist.angular.y = 200.0 * (vehiclePitch - vehicleRecPitch);
-    odomData.twist.twist.angular.z = vehicleYawRate;
-    odomData.twist.twist.linear.x = vehicleSpeed;
-    odomData.twist.twist.linear.z = 200.0 * (vehicleZ - vehicleRecZ);
-    pubVehicleOdom.publish(odomData);
-
-    // publish 200Hz tf messages
-    odomTrans.stamp_ = odomTime;
-    odomTrans.setRotation(tf::Quaternion(geoQuat.x, geoQuat.y, geoQuat.z, geoQuat.w));
-    odomTrans.setOrigin(tf::Vector3(vehicleX, vehicleY, vehicleZ));
-    tfBroadcaster.sendTransform(odomTrans);
-
-    // publish 200Hz Gazebo model state messages (this is for Gazebo simulation)
-    cameraState.pose.orientation = geoQuat;
-    cameraState.pose.position.x = vehicleX;
-    cameraState.pose.position.y = vehicleY;
-    cameraState.pose.position.z = vehicleZ + cameraOffsetZ;
-    pubModelState.publish(cameraState);
-
-    robotState.pose.orientation = geoQuat;
-    robotState.pose.position.x = vehicleX;
-    robotState.pose.position.y = vehicleY;
-    robotState.pose.position.z = vehicleZ;
-    pubModelState.publish(robotState);
-
-    geoQuat = tf::createQuaternionMsgFromRollPitchYaw(terrainRoll, terrainPitch, 0);
-
-    lidarState.pose.orientation = geoQuat;
-    lidarState.pose.position.x = vehicleX;
-    lidarState.pose.position.y = vehicleY;
-    lidarState.pose.position.z = vehicleZ;
-    pubModelState.publish(lidarState);
+    // The motion integration loop is REMOVED.
+    // vehicleX/Y/Z/Roll/Pitch/Yaw are updated by the odometryHandler callback.
+    
+    // Command Relay: Use the speed/rate updated by the odometryHandler to command the vehicle
+    twist_msg.linear.x = vehicleSpeed;
+    twist_msg.linear.y = 0.0;
+    twist_msg.linear.z = 0.0;
+    twist_msg.angular.x = 0.0;
+    twist_msg.angular.y = 0.0;
+    twist_msg.angular.z = vehicleYawRate;
+    pubMotionPointer->publish(twist_msg);
 
     status = ros::ok();
     rate.sleep();

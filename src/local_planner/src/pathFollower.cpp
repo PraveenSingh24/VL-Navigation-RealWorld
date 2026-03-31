@@ -25,6 +25,7 @@
 #include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/kdtree/kdtree_flann.h>
+#include <geometry_msgs/PointStamped.h> //Radha Rani2
 
 using namespace std;
 
@@ -38,9 +39,9 @@ bool twoWayDrive = true;
 double lookAheadDis = 0.5;
 double yawRateGain = 7.5;
 double stopYawRateGain = 7.5;
-double maxYawRate = 45.0;
-double maxSpeed = 1.0;
-double maxAccel = 1.0;
+double maxYawRate = 15.0; // 45.0
+double maxSpeed = 0.2;   //given 1.0
+double maxAccel = 0.2;   //given 1.0
 double switchTimeThre = 1.0;
 double dirDiffThre = 0.1;
 double stopDisThre = 0.2;
@@ -90,6 +91,9 @@ int pathPointID = 0;
 bool pathInit = false;
 bool navFwd = true;
 double switchTime = 0;
+double goalX = 0;
+double goalY = 0; //Radha Rani 4
+double goalXR = 0;
 
 nav_msgs::Path path;
 
@@ -178,6 +182,12 @@ void stopHandler(const std_msgs::Int8::ConstPtr& stop)
   safetyStop = stop->data;
 }
 
+void goalHandlerR(const geometry_msgs::PointStamped::ConstPtr& goal) //Radha Rani3
+{
+  goalX = goal->point.x;
+  goalY = goal->point.y;
+}
+
 int main(int argc, char** argv)
 {
   ros::init(argc, argv, "pathFollower");
@@ -217,13 +227,15 @@ int main(int argc, char** argv)
 
   ros::Subscriber subPath = nh.subscribe<nav_msgs::Path> ("/path", 5, pathHandler);
 
-  ros::Subscriber subJoystick = nh.subscribe<sensor_msgs::Joy> ("/joy", 5, joystickHandler);
+  //ros::Subscriber subJoystick = nh.subscribe<sensor_msgs::Joy> ("/joy", 5, joystickHandler);
 
   ros::Subscriber subSpeed = nh.subscribe<std_msgs::Float32> ("/speed", 5, speedHandler);
 
   ros::Subscriber subStop = nh.subscribe<std_msgs::Int8> ("/stop", 5, stopHandler);
 
-  ros::Publisher pubSpeed = nh.advertise<geometry_msgs::TwistStamped> ("/cmd_vel", 5);
+  ros::Publisher pubSpeed = nh.advertise<geometry_msgs::TwistStamped> ("/cmd_vel_in", 5);
+  ros::Subscriber subGoal = nh.subscribe<geometry_msgs::PointStamped> ("/wpts", 5, goalHandlerR); //Radha Rani1
+
   geometry_msgs::TwistStamped cmd_vel;
   cmd_vel.header.frame_id = "vehicle";
 
@@ -266,12 +278,41 @@ int main(int argc, char** argv)
       disY = path.poses[pathPointID].pose.position.y - vehicleYRel;
       dis = sqrt(disX * disX + disY * disY);
       float pathDir = atan2(disY, disX);
+      //Krishna.....................
+      /*
+      // Normalize the yaw difference to the range (-PI, PI)
+      float yawDiff = pathDir - vehicleYaw;
+      if (yawDiff > PI) yawDiff -= 2 * PI;
+      else if (yawDiff < -PI) yawDiff += 2 * PI;
 
+      // If yaw difference exists (beyond a threshold), rotate to minimize the difference
+      if (fabs(yawDiff) > 0.1) {  // Adjust this threshold as needed
+          // Rotate the vehicle at a rate proportional to the yaw difference
+          vehicleYawRate = yawRateGain * yawDiff;
+
+          // Limit the yaw rate to prevent excessive rotation
+          if (vehicleYawRate > maxYawRate * PI / 180.0) vehicleYawRate = maxYawRate * PI / 180.0;
+          else if (vehicleYawRate < -maxYawRate * PI / 180.0) vehicleYawRate = -maxYawRate * PI / 180.0;
+
+          // Stop forward movement while rotating
+          vehicleSpeed = 0.1;
+
+          // Publish the rotation command
+          cmd_vel.twist.angular.z = vehicleYawRate;
+          cmd_vel.twist.linear.x = 0;
+          pubSpeed.publish(cmd_vel);
+          
+          // Skip further path following until yaw difference is minimized
+          continue;
+      }
+      */
+      //end
+      
       float dirDiff = vehicleYaw - vehicleYawRec - pathDir;
       if (dirDiff > PI) dirDiff -= 2 * PI;
       else if (dirDiff < -PI) dirDiff += 2 * PI;
-      if (dirDiff > PI) dirDiff -= 2 * PI;
-      else if (dirDiff < -PI) dirDiff += 2 * PI;
+      //if (dirDiff > PI) dirDiff -= 2 * PI;
+      //else if (dirDiff < -PI) dirDiff += 2 * PI;
 
       if (twoWayDrive) {
         double time = ros::Time::now().toSec();
@@ -283,7 +324,7 @@ int main(int argc, char** argv)
           switchTime = time;
         }
       }
-
+      
       float joySpeed2 = maxSpeed * joySpeed;
       if (!navFwd) {
         dirDiff += PI;
@@ -320,7 +361,24 @@ int main(int argc, char** argv)
         if (vehicleSpeed > 0) vehicleSpeed -= maxAccel / 100.0;
         else if (vehicleSpeed < 0) vehicleSpeed += maxAccel / 100.0;
       }
-
+      //Radha
+      float pathDr = atan2(goalY-vehicleY, goalX-vehicleX);
+      float yawDiff = pathDr - vehicleYaw;
+      // Normalize yaw difference to the range (-PI, PI)
+      if (yawDiff > PI) yawDiff -= 2 * PI;
+      else if (yawDiff < -PI) yawDiff += 2 * PI;
+      
+      if (goalXR != goalX){
+        if (fabs(yawDiff) > 1.0) {
+          cmd_vel.twist.angular.z = 0.8*yawDiff;
+          cmd_vel.twist.linear.x = 0.0;
+          pubSpeed.publish(cmd_vel);
+          continue;
+        }
+        goalXR = goalX;
+      }
+      
+      //end
       if (odomTime < stopInitTime + stopTime && stopInitTime > 0) {
         vehicleSpeed = 0;
         vehicleYawRate = 0;

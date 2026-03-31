@@ -1,0 +1,27 @@
+[
+    {
+        "action": "MOVE",
+        "desc": "Move little ahead",
+        "forward_dist": 0.5,
+        "yaw_delta": 0.0
+    },
+    {
+        "action": "FIND",
+        "target": "chair",
+        "id": 56,
+        "thresh": 1.3
+    },
+    {
+        "action": "FIND",
+        "target": "potted plant",
+        "id": 58,
+        "thresh": 1.7
+    },
+    {
+        "action": "FIND",
+        "target": "person",
+        "id": 0,
+        "thresh": 1
+    }
+
+]

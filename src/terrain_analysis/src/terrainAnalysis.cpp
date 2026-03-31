@@ -58,13 +58,13 @@ double disRatioZ = 0.2;
 float terrainVoxelSize = 1.0;
 int terrainVoxelShiftX = 0;
 int terrainVoxelShiftY = 0;
-const int terrainVoxelWidth = 21;
+const int terrainVoxelWidth = 11;
 int terrainVoxelHalfWidth = (terrainVoxelWidth - 1) / 2;
 const int terrainVoxelNum = terrainVoxelWidth * terrainVoxelWidth;
 
 // planar voxel parameters
 float planarVoxelSize = 0.2;
-const int planarVoxelWidth = 51;
+const int planarVoxelWidth = 21;
 int planarVoxelHalfWidth = (planarVoxelWidth - 1) / 2;
 const int planarVoxelNum = planarVoxelWidth * planarVoxelWidth;
 
@@ -229,8 +229,8 @@ int main(int argc, char **argv) {
   ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>(
       "/registered_scan", 5, laserCloudHandler);
 
-  ros::Subscriber subJoystick =
-      nh.subscribe<sensor_msgs::Joy>("/joy", 5, joystickHandler);
+  //ros::Subscriber subJoystick =
+      //nh.subscribe<sensor_msgs::Joy>("/joy", 5, joystickHandler);
 
   ros::Subscriber subClearing =
       nh.subscribe<std_msgs::Float32>("/map_clearing", 5, clearingHandler);

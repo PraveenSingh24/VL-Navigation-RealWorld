@@ -1,0 +1,26 @@
+<launch>
+
+  <arg name="align_depth" default="false"/>
+  <arg name="depth_width" default="640"/>
+  <arg name="depth_height" default="480"/>
+  <arg name="depth_fps" default="5"/>
+  <arg name="color_width" default="640"/>
+  <arg name="color_height" default="480"/>
+  <arg name="color_fps" default="5"/>
+  <arg name="depth_topic" default="/camera/depth/image_rect_raw"/>
+
+  <include file="$(find realsense2_camera)/launch/rs_rgbd.launch" >
+    <arg name="align_depth" value="$(arg align_depth)"/>
+    <arg name="depth_width" value="$(arg depth_width)"/>
+    <arg name="depth_height" value="$(arg depth_height)"/>
+    <arg name="depth_fps" value="$(arg depth_fps)"/>
+    <arg name="color_width" value="$(arg color_width)"/>
+    <arg name="color_height" value="$(arg color_height)"/>
+    <arg name="color_fps" value="$(arg color_fps)"/>
+    <!--arg name="depth_topic" value="$(arg depth_topic)"/-->
+  </include>
+  
+  <!--node pkg="depth_to_pointcloud" type="depth_to_pointcloud.py" name="RealSenseCamera" output="screen"/-->
+  <include file="$(find husky_base)/launch/base.launch" />
+
+</launch>
